@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Sonar SG · Ping the city</title>
+    <meta name="description" content="Sonar SG finds hospitals, pharmacies, MRT exits, hawker centres and 16,000+ other services near any point in Singapore.">
+    <meta name="theme-color" content="#070b16" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#f4f7fb" media="(prefers-color-scheme: light)">
+
+    <!-- Favicon: radar ring with a pin at its centre -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23070b16'/%3E%3Ccircle cx='32' cy='32' r='22' fill='none' stroke='%232de2c4' stroke-width='3' opacity='.45'/%3E%3Ccircle cx='32' cy='32' r='13' fill='none' stroke='%232de2c4' stroke-width='3' opacity='.8'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23ffb547'/%3E%3C/svg%3E">
+
+    <!-- Apply the saved / system theme before first paint to avoid a flash -->
+    <script>
+        (function () {
+            var t = null;
+            try { t = localStorage.getItem("sonar.theme"); } catch (e) {}
+            if (t !== "light" && t !== "dark") {
+                t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+            }
+            document.documentElement.setAttribute("data-theme", t);
+        })();
+    </script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="is-intro">
+
+    <a class="skip-link" href="#placeInput">Skip to location search</a>
+
+    <!-- ===================================================== MAP -->
+    <main id="map" aria-label="Interactive map of Singapore services"></main>
+
+    <!-- ===================================================== INTRO (Ken Burns over the live map) -->
+    <section id="intro" class="intro" aria-labelledby="introTitle">
+        <div class="intro-vignette" aria-hidden="true"></div>
+        <div class="intro-grid" aria-hidden="true"></div>
+        <div class="intro-sweep" aria-hidden="true"></div>
+
+        <div class="intro-content">
+            <div class="intro-logo" aria-hidden="true">
+                <span class="ring r1"></span><span class="ring r2"></span><span class="ring r3"></span>
+                <span class="beam"></span>
+                <span class="core"></span>
+            </div>
+            <p class="intro-eyebrow">Singapore · Nearby Services WebGIS</p>
+            <h1 id="introTitle" class="intro-title">
+                <span class="intro-name">Sonar&nbsp;SG</span>
+                <span class="intro-tagline">Ping the city.</span>
+            </h1>
+            <p class="intro-lede">
+                Drop a pin anywhere in Singapore and see the hospitals, pharmacies,
+                MRT exits, hawker centres and parks around you, sorted by distance.
+            </p>
+
+            <dl class="intro-stats">
+                <div><dt>Services</dt><dd data-count="16487">0</dd></div>
+                <div><dt>Service types</dt><dd data-count="22">0</dd></div>
+                <div><dt>Categories</dt><dd data-count="7">0</dd></div>
+            </dl>
+
+            <div class="intro-actions">
+                <button id="introStart" class="btn btn-primary btn-glow btn-lg" type="button">
+                    <span data-icon="radar"></span> Start exploring
+                </button>
+                <button id="introTour" class="btn btn-ghost btn-lg" type="button">
+                    <span data-icon="play"></span> Take the tour
+                </button>
+            </div>
+            <p class="intro-hint"><kbd>Enter</kbd> to start</p>
+        </div>
+
+        <p class="intro-credit">PostGIS · GeoServer · Leaflet · Data: OpenStreetMap, LTA, MOH CHAS, NParks, MOE, data.gov.sg</p>
+    </section>
+
+    <!-- ===================================================== HEADER PILL -->
+    <header id="brandBar" class="brand-bar glass enter-left">
+        <a class="brand" href="./" aria-label="Sonar SG home">
+            <span class="brand-logo" aria-hidden="true">
+                <span class="ring r1"></span><span class="ring r2"></span><span class="core"></span>
+                <span class="beam"></span>
+            </span>
+            <span class="brand-text">
+                <span class="brand-name">Sonar SG</span>
+                <span class="brand-tagline">Ping the city.</span>
+            </span>
+        </a>
+        <div id="brandActions" class="brand-actions">
+            <button id="helpBtn" class="icon-btn" type="button" aria-label="Help and guided tour (?)" data-tip="Help · ?">
+                <span data-icon="circle-help"></span>
+            </button>
+            <button id="themeBtn" class="icon-btn theme-btn" type="button" aria-label="Toggle light or dark theme (T)" data-tip="Theme · T">
+                <span class="sun" data-icon="sun"></span>
+                <span class="moon" data-icon="moon"></span>
+            </button>
+            <button id="layersBtn" class="icon-btn" type="button" aria-label="Basemaps and layers (L)" aria-expanded="false" aria-controls="layersPanel" data-tip="Layers · L">
+                <span data-icon="layers"></span>
+            </button>
+        </div>
+    </header>
+
+    <!-- ===================================================== SEARCH DOCK -->
+    <section id="searchDock" class="search-dock enter-top" aria-label="Choose your location">
+        <label for="placeInput" class="dock-label">Where are you?</label>
+
+        <div class="search-bar glass" id="searchBar">
+            <span class="search-icon" data-icon="search" aria-hidden="true"></span>
+            <input
+                id="placeInput"
+                type="text"
+                inputmode="search"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Address, place or 6-digit postal code"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded="false"
+                aria-controls="suggestions"
+                aria-describedby="dockHint">
+            <button id="placeClear" class="icon-btn icon-btn-sm" type="button" aria-label="Clear search text" hidden>
+                <span data-icon="x"></span>
+            </button>
+            <span class="bar-divider" aria-hidden="true"></span>
+            <button id="gpsBtn" class="icon-btn" type="button" aria-label="Use my location" data-tip="Use my location">
+                <span data-icon="locate-fixed"></span>
+            </button>
+            <button id="coordBtn" class="icon-btn" type="button" aria-label="Enter coordinates" aria-expanded="false" aria-controls="coordPopover" data-tip="Enter coordinates">
+                <span data-icon="crosshair"></span>
+            </button>
+            <button id="findBtn" class="btn btn-primary btn-find" type="button">
+                <span class="find-label">Find</span>
+                <span class="find-icon" data-icon="search" aria-hidden="true"></span>
+            </button>
+        </div>
+
+        <ul id="suggestions" class="suggestions glass" role="listbox" aria-label="Address suggestions" hidden></ul>
+
+        <!-- Coordinates popover -->
+        <form id="coordPopover" class="popover glass" hidden novalidate>
+            <div class="popover-head">
+                <strong>Enter coordinates</strong>
+                <span class="tip" tabindex="0" data-tip="WGS 84 decimal degrees (EPSG:4326). Singapore is roughly 1.15–1.48 N, 103.6–104.1 E." aria-label="About coordinates"><span data-icon="info"></span></span>
+            </div>
+            <div class="field-row">
+                <div class="field">
+                    <label for="latInput">Latitude</label>
+                    <input id="latInput" type="text" inputmode="decimal" placeholder="1.3521" autocomplete="off" aria-describedby="latErr">
+                    <small id="latErr" class="field-error" aria-live="polite"></small>
+                </div>
+                <div class="field">
+                    <label for="lonInput">Longitude</label>
+                    <input id="lonInput" type="text" inputmode="decimal" placeholder="103.8198" autocomplete="off" aria-describedby="lonErr">
+                    <small id="lonErr" class="field-error" aria-live="polite"></small>
+                </div>
+            </div>
+            <p class="popover-note">Tip: you can paste "1.3521, 103.8198" into Latitude.</p>
+            <div class="popover-actions">
+                <button type="button" id="coordCentre" class="btn btn-ghost btn-sm">Use map centre</button>
+                <button type="submit" class="btn btn-primary btn-sm">Set location</button>
+            </div>
+        </form>
+
+        <p id="dockHint" class="dock-hint"><span data-icon="mouse-pointer-click"></span> Or tap anywhere on the map</p>
+
+        <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true" hidden>
+            <span class="toast-icon" aria-hidden="true"></span>
+            <span class="toast-msg"></span>
+            <button class="toast-action btn btn-ghost btn-xs" type="button" hidden></button>
+            <button class="toast-close icon-btn icon-btn-xs" type="button" aria-label="Dismiss message"><span data-icon="x"></span></button>
+        </div>
+    </section>
+
+    <!-- ===================================================== FILTER CARD (left) -->
+    <aside id="filterCard" class="panel panel-left glass enter-left" aria-label="Search filters">
+        <div class="panel-head">
+            <h2 class="panel-title"><span data-icon="sliders-horizontal"></span> Search filters</h2>
+            <button class="icon-btn icon-btn-sm panel-collapse" type="button" data-collapse="filterCard" aria-label="Collapse filters" aria-expanded="true">
+                <span data-icon="chevron-left"></span>
+            </button>
+        </div>
+
+        <!-- Icon rail, visible when the card is collapsed -->
+        <div class="panel-rail" aria-hidden="true">
+            <button class="rail-btn" type="button" data-expand="filterCard" tabindex="-1" aria-label="Expand filters"><span data-icon="sliders-horizontal"></span></button>
+            <div id="railCats" class="rail-cats"></div>
+            <button class="rail-btn rail-scan" type="button" data-rail-scan tabindex="-1" aria-label="Scan nearby"><span data-icon="radar"></span></button>
+        </div>
+
+        <div id="filterBody" class="panel-body">
+            <!-- 1. Location -->
+            <div class="field-group" id="fgLocation">
+                <div class="fg-head">
+                    <h3 class="fg-title"><span class="step-num">1</span> Location</h3>
+                    <span class="tip" tabindex="0" data-tip="Set it with the search bar, your device location, coordinates, or by clicking the map." aria-label="About location"><span data-icon="info"></span></span>
+                </div>
+                <div id="locChip" class="loc-chip is-empty">
+                    <span class="loc-dot" aria-hidden="true"></span>
+                    <span class="loc-text">
+                        <span class="loc-name">No location yet</span>
+                        <span class="loc-coords">Search, use GPS or tap the map</span>
+                    </span>
+                    <button id="locEdit" class="icon-btn icon-btn-sm" type="button" aria-label="Edit location"><span data-icon="search"></span></button>
+                    <button id="locClear" class="icon-btn icon-btn-sm" type="button" aria-label="Clear location" hidden><span data-icon="x"></span></button>
+                </div>
+            </div>
+
+            <!-- 2. Category -->
+            <div class="field-group" id="fgCategory" role="group" aria-labelledby="lblCategory">
+                <div class="fg-head">
+                    <h3 class="fg-title" id="lblCategory"><span class="step-num">2</span> Service category</h3>
+                    <span id="catCount" class="fg-count" aria-live="polite"></span>
+                    <span class="tip" tabindex="0" data-tip="Pick a broad group. Choose a specific type in the next step, or keep 'All types'." aria-label="About service category"><span data-icon="info"></span></span>
+                </div>
+                <div id="categoryChips" class="chips" role="radiogroup" aria-label="Service category"></div>
+            </div>
+
+            <!-- 3. Service type -->
+            <div class="field-group" id="fgType" role="group" aria-labelledby="lblType">
+                <div class="fg-head">
+                    <h3 class="fg-title" id="lblType"><span class="step-num">3</span> Service type</h3>
+                    <span class="tip" tabindex="0" data-tip="Optional subcategory filter, e.g. Pharmacy inside Healthcare." aria-label="About service type"><span data-icon="info"></span></span>
+                </div>
+                <div id="typeChips" class="chips chips-sm" role="radiogroup" aria-label="Service type"></div>
+                <p id="typeHint" class="fg-note">Choose a category to see its service types.</p>
+            </div>
+
+            <!-- 4. Search type -->
+            <div class="field-group" id="fgMode" role="group" aria-labelledby="lblMode">
+                <div class="fg-head">
+                    <h3 class="fg-title" id="lblMode"><span class="step-num">4</span> Search type</h3>
+                    <span class="tip" tabindex="0" data-tip="Radius finds everything within a distance. Nearest N finds the closest N, however far." aria-label="About search type"><span data-icon="info"></span></span>
+                </div>
+                <div class="segmented" role="radiogroup" aria-label="Search type">
+                    <input type="radio" name="mode" id="modeRadius" value="radius" checked>
+                    <label for="modeRadius"><span data-icon="radar"></span> Within a radius</label>
+                    <input type="radio" name="mode" id="modeNearest" value="nearest">
+                    <label for="modeNearest"><span data-icon="list"></span> Nearest N</label>
+                    <span class="seg-thumb" aria-hidden="true"></span>
+                </div>
+            </div>
+
+            <!-- 5. Radius -->
+            <div class="field-group" id="fgRadius">
+                <div class="fg-head">
+                    <h3 class="fg-title"><label for="radiusRange"><span class="step-num">5</span> Search radius</label></h3>
+                    <output id="radiusOut" for="radiusRange" class="fg-value">1 km</output>
+                </div>
+                <div class="range-wrap" id="radiusWrap" data-tip="">
+                    <input id="radiusRange" type="range" min="0" max="4" step="1" value="1" aria-valuetext="1 kilometre">
+                    <div class="range-ticks" aria-hidden="true">
+                        <span>500 m</span><span>1 km</span><span>2 km</span><span>5 km</span><span>10 km</span>
+                    </div>
+                </div>
+                <p id="radiusNote" class="fg-note" hidden><span data-icon="info"></span> Not used in Nearest N mode. The ring will stretch to the farthest result.</p>
+            </div>
+
+            <!-- 6. Limit -->
+            <div class="field-group" id="fgLimit" role="group" aria-labelledby="lblLimit">
+                <div class="fg-head">
+                    <h3 class="fg-title" id="lblLimit"><span class="step-num">6</span> <span id="limitLabel">Maximum results</span></h3>
+                    <span class="tip" tabindex="0" data-tip="Radius mode: the cap on how many places are listed. Nearest N: exactly how many closest places to return." aria-label="About number of results"><span data-icon="info"></span></span>
+                </div>
+                <div id="limitPills" class="pills" role="radiogroup" aria-label="Number of results">
+                    <input type="radio" name="limit" id="lim5" value="5"><label for="lim5">5</label>
+                    <input type="radio" name="limit" id="lim10" value="10"><label for="lim10">10</label>
+                    <input type="radio" name="limit" id="lim20" value="20"><label for="lim20">20</label>
+                    <input type="radio" name="limit" id="lim50" value="50"><label for="lim50">50</label>
+                    <input type="radio" name="limit" id="lim100" value="100" checked><label for="lim100">100</label>
+                </div>
+            </div>
+
+        
+
+            <!-- 7. Scan -->
+            <div class="scan-row" id="scanRow">
+                <span class="scan-wrap" id="scanWrap" data-tip="Set a location first">
+                    <button id="scanBtn" class="btn btn-primary btn-scan" type="button" aria-disabled="true">
+                        <span class="scan-radar" aria-hidden="true"></span>
+                        <span class="scan-label">Scan nearby ✦</span>
+                    </button>
+                </span>
+                <button id="resetBtn" class="link-btn" type="button"><span data-icon="rotate-ccw"></span> Reset filters</button>
+            </div>
+        </div>
+        
+    </aside>
+
+    <!-- ===================================================== RESULTS CARD (right) -->
+    <aside id="resultsCard" class="panel panel-right glass enter-right" aria-label="Search results">
+        <div class="panel-head results-head">
+            <div class="results-title-wrap">
+                <h2 class="panel-title" id="resultsTitle"><span data-icon="list"></span> Results</h2>
+                <p id="resultsSub" class="results-sub">Set a location, then scan.</p>
+            </div>
+            <button class="icon-btn icon-btn-sm panel-collapse" type="button" data-collapse="resultsCard" aria-label="Collapse results" aria-expanded="true">
+                <span data-icon="chevron-right"></span>
+            </button>
+        </div>
+
+        <div class="panel-rail" aria-hidden="true">
+            <button class="rail-btn" type="button" data-expand="resultsCard" tabindex="-1" aria-label="Expand results"><span data-icon="list"></span></button>
+            <span id="railCount" class="rail-count">0</span>
+        </div>
+
+        <div id="resultsBody" class="panel-body results-body">
+            <div class="results-toolbar" id="resultsToolbar" hidden>
+                <label class="sort-ctl">
+                    <span data-icon="arrow-up-down"></span>
+                    <span class="sr-only">Sort results by</span>
+                    <select id="sortSelect">
+                        <option value="distance">Nearest first</option>
+                        <option value="name">Name A–Z</option>
+                        <option value="type">Service type</option>
+                    </select>
+                </label>
+                <div class="toolbar-actions">
+                    <button id="shareBtn" class="icon-btn icon-btn-sm" type="button" aria-label="Copy a shareable link" data-tip="Share link"><span data-icon="share-2"></span></button>
+                    <div class="menu-wrap">
+                        <button id="exportBtn" class="icon-btn icon-btn-sm" type="button" aria-label="Download results" aria-haspopup="menu" aria-expanded="false" data-tip="Download"><span data-icon="download"></span></button>
+                        <div id="exportMenu" class="menu glass" role="menu" hidden>
+                            <button type="button" role="menuitem" data-export="csv">Download CSV</button>
+                            <button type="button" role="menuitem" data-export="geojson">Download GeoJSON</button>
+                        </div>
+                    </div>
+                    <button id="clearBtn" class="link-btn" type="button"><span data-icon="trash-2"></span> Clear</button>
+                </div>
+            </div>
+            <div id="resultsList" class="results-list" role="list" aria-live="polite" aria-busy="false"></div>
+        </div>
+    </aside>
+
+    <!-- ===================================================== MOBILE BOTTOM SHEET -->
+    <section id="sheet" class="sheet glass" aria-label="Filters and results">
+        <div class="sheet-grip" id="sheetGrip" role="button" tabindex="0" aria-label="Drag or press to resize panel">
+            <span class="grip-bar"></span>
+        </div>
+        <div class="sheet-tabs" role="tablist">
+            <button id="tabFilters" class="sheet-tab" role="tab" aria-selected="true" aria-controls="sheetFilters" type="button">
+                <span data-icon="sliders-horizontal"></span> Filters
+            </button>
+            <button id="tabResults" class="sheet-tab" role="tab" aria-selected="false" aria-controls="sheetResults" type="button">
+                <span data-icon="list"></span> Results <span id="tabCount" class="tab-count" hidden>0</span>
+            </button>
+            <span class="tab-thumb" aria-hidden="true"></span>
+        </div>
+        <div class="sheet-body">
+            <div id="sheetFilters" class="sheet-pane" role="tabpanel" aria-labelledby="tabFilters"></div>
+            <div id="sheetResults" class="sheet-pane" role="tabpanel" aria-labelledby="tabResults" hidden></div>
+        </div>
+    </section>
+
+    <!-- Mobile floating action stack (help / theme / layers get moved here) -->
+    <div id="mobileActions" class="mobile-actions"></div>
+
+    <!-- ===================================================== LAYERS PANEL -->
+    <section id="layersPanel" class="layers-panel glass" role="dialog" aria-label="Basemaps and layers" hidden>
+        <div class="lp-head">
+            <h2><span data-icon="layers"></span> Layers</h2>
+            <button id="layersClose" class="icon-btn icon-btn-sm" type="button" aria-label="Close layers"><span data-icon="x"></span></button>
+        </div>
+        <h3 class="lp-sub">Base map</h3>
+        <div id="basemapGrid" class="basemap-grid" role="radiogroup" aria-label="Base map"></div>
+        <p class="lp-note" id="basemapNote">Follows the theme until you pick one.</p>
+
+        <h3 class="lp-sub">Overlays</h3>
+        <div id="overlayList" class="overlay-list"></div>
+
+        <h3 class="lp-sub">GeoServer by category</h3>
+        <p class="lp-note">WMS layer filtered with <code>CQL_FILTER</code>.</p>
+        <div id="wmsCatList" class="wms-cats"></div>
+    </section>
+
+    <!-- ===================================================== HELP MODAL -->
+    <div id="helpModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="helpTitle" hidden>
+        <div class="modal-backdrop" data-close-modal></div>
+        <div class="modal-card glass">
+            <div class="modal-head">
+                <h2 id="helpTitle"><span data-icon="circle-help"></span> How Sonar SG works</h2>
+                <button class="icon-btn icon-btn-sm" type="button" data-close-modal aria-label="Close help"><span data-icon="x"></span></button>
+            </div>
+
+            <div class="modal-tabs" role="tablist">
+                <button role="tab" type="button" class="modal-tab" aria-selected="true" aria-controls="helpQuick" id="htQuick">Quick start</button>
+                <button role="tab" type="button" class="modal-tab" aria-selected="false" aria-controls="helpModes" id="htModes">Search modes explained</button>
+                <button role="tab" type="button" class="modal-tab" aria-selected="false" aria-controls="helpMap" id="htMap">Map &amp; layers</button>
+            </div>
+
+            <div class="modal-body">
+                <section id="helpQuick" role="tabpanel" aria-labelledby="htQuick" class="help-pane">
+                    <ol class="help-steps">
+                        <li><span class="hs-icon" data-icon="map-pin"></span><div><strong>Set your location</strong><p>Type an address or a 6-digit postal code, press <span data-icon="locate-fixed" class="inline-ic"></span> for your device location, <span data-icon="crosshair" class="inline-ic"></span> for coordinates, or just tap the map.</p></div></li>
+                        <li><span class="hs-icon" data-icon="layout-grid"></span><div><strong>Pick what you need</strong><p>Choose a service category, then optionally a service type such as Pharmacy or MRT Station Exit.</p></div></li>
+                        <li><span class="hs-icon" data-icon="radar"></span><div><strong>Choose how to search</strong><p>Search within a radius, or ask for the nearest N places.</p></div></li>
+                        <li><span class="hs-icon" data-icon="scan-search"></span><div><strong>Scan nearby</strong><p>Results come back sorted by distance. Click a card to fly to it, or click a marker to find its card.</p></div></li>
+                    </ol>
+                    <h3 class="help-h3"><span data-icon="keyboard"></span> Keyboard shortcuts</h3>
+                    <dl class="shortcuts">
+                        <div><dt><kbd>/</kbd></dt><dd>Focus the location search</dd></div>
+                        <div><dt><kbd>Enter</kbd></dt><dd>Scan nearby (when not typing)</dd></div>
+                        <div><dt><kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Move through results</dd></div>
+                        <div><dt><kbd>L</kbd></dt><dd>Open the layers menu</dd></div>
+                        <div><dt><kbd>T</kbd></dt><dd>Switch light / dark theme</dd></div>
+                        <div><dt><kbd>?</kbd></dt><dd>Open this help</dd></div>
+                        <div><dt><kbd>Esc</kbd></dt><dd>Close panels, menus and popups</dd></div>
+                    </dl>
+                </section>
+
+                <section id="helpModes" role="tabpanel" aria-labelledby="htModes" class="help-pane" hidden>
+                    <div class="mode-explain">
+                        <div class="me-card">
+                            <div class="me-art me-radius" aria-hidden="true"><span></span><i></i><i></i><i></i><b></b></div>
+                            <h3>Within a radius</h3>
+                            <p>Returns every matching place inside the circle, up to the maximum you set, nearest first. Good for “what's within walking distance?”.</p>
+                            <p class="me-tech">PostGIS: <code>ST_DWithin(geog, point, radius)</code> on a geography column, so distances are true metres on the WGS 84 spheroid.</p>
+                        </div>
+                        <div class="me-card">
+                            <div class="me-art me-nearest" aria-hidden="true"><span></span><i></i><i></i><i></i><b></b></div>
+                            <h3>Nearest N</h3>
+                            <p>Returns exactly the N closest places, however far they are. Good for rare services like hospitals or fire stations.</p>
+                            <p class="me-tech">PostGIS: <code>ORDER BY ST_Distance(geog, point) LIMIT N</code>. The ring stretches to the farthest result.</p>
+                        </div>
+                    </div>
+                    <p class="help-note"><span data-icon="info"></span> If a radius search comes back empty, Sonar SG suggests the next radius up or switching to Nearest N.</p>
+                </section>
+
+                <section id="helpMap" role="tabpanel" aria-labelledby="htMap" class="help-pane" hidden>
+                    <ul class="help-list">
+                        <li><span data-icon="layers"></span><div><strong>Base maps</strong><p>OpenStreetMap, CARTO Light and Dark, OneMap Singapore and Esri satellite. The base map follows the theme until you pick one.</p></div></li>
+                        <li><span data-icon="globe"></span><div><strong>GeoServer overlays</strong><p>“All services” and the per-category layers are WMS images published by GeoServer from the same PostGIS table.</p></div></li>
+                        <li><span data-icon="map-pin"></span><div><strong>Markers &amp; clusters</strong><p>Result pins use category colours and icons. Dense results group into clusters; click one to zoom in.</p></div></li>
+                        <li><span data-icon="flame"></span><div><strong>Heatmap</strong><p>Shows where the current results concentrate.</p></div></li>
+                        <li><span data-icon="map"></span><div><strong>Scale &amp; coordinates</strong><p>The scale bar and live cursor coordinates sit at the bottom-left of the map.</p></div></li>
+                    </ul>
+                </section>
+            </div>
+
+            <div class="modal-foot">
+                <button id="startTourBtn" class="btn btn-primary" type="button"><span data-icon="play"></span> Take the tour</button>
+                <button class="btn btn-ghost" type="button" data-close-modal>Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================================================== GUIDED TOUR -->
+    <div id="tour" class="tour" hidden>
+        <div class="tour-spot" id="tourSpot"></div>
+        <div class="tour-card glass" id="tourCard" role="dialog" aria-modal="true" aria-labelledby="tourTitle" aria-describedby="tourText">
+            <p class="tour-step" id="tourStep">Step 1 of 6</p>
+            <h3 id="tourTitle">Title</h3>
+            <p id="tourText">Text</p>
+            <div class="tour-dots" id="tourDots" aria-hidden="true"></div>
+            <div class="tour-actions">
+                <button type="button" class="link-btn" id="tourSkip">Skip tour</button>
+                <span class="spacer"></span>
+                <button type="button" class="btn btn-ghost btn-sm" id="tourBack">Back</button>
+                <button type="button" class="btn btn-primary btn-sm" id="tourNext">Next</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- API offline banner -->
+    <div id="apiBanner" class="api-banner glass" role="alert" hidden>
+        <span data-icon="wifi-off"></span>
+        <span class="api-msg">Can't reach the search API.</span>
+        <button id="apiRetry" class="btn btn-ghost btn-xs" type="button">Retry</button>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+    <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+    <script src="js/icons.js"></script>
+    <script src="js/sg-regions.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
