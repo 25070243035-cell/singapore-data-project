@@ -1,0 +1,27 @@
+# Render blueprint for the Sonar SG API.
+#
+# The web service only exposes the Flask API. The map frontend in webgis/ is
+# published separately by .github/workflows/pages.yml to GitHub Pages.
+services:
+  - type: web
+    name: singapore-data-project
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 60
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      # Supplied automatically from the Render Postgres instance.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: singapore-webgis-db
+          property: connectionString
+
+databases:
+  - name: singapore-webgis-db
+    plan: free
+    databaseName: singapore_webgis
+    postgresMajorVersion: "16"

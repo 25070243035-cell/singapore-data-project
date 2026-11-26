@@ -9,33 +9,115 @@ import math
 app = Flask(__name__)
 CORS(app)
 
-# Configure database using environment variables.
+# ---------------------------------------------------------------------------
+# Database configuration
+#
+# Render Postgres (and Neon / Supabase / Heroku) expose a single connection
+# string as DATABASE_URL. That takes priority. For local development the
+# individual PG* variables are used instead, so `python app.py` keeps working
+# against a laptop Postgres with no environment setup at all.
+# ---------------------------------------------------------------------------
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 DB_CONFIG = {
     "host": os.getenv("PGHOST", "localhost"),
     "port": os.getenv("PGPORT", "5432"),
     "dbname": os.getenv("PGDATABASE", "singapore_webgis"),
     "user": os.getenv("PGUSER", "postgres"),
-    "password": os.getenv("PGPASSWORD")
+    "password": os.getenv("PGPASSWORD"),
 }
+
+# Managed providers require TLS. Render's *internal* hostname does not, so
+# sslmode is only forced for host names that are reachable from outside.
+PGSSLMODE = os.getenv("PGSSLMODE")
+if PGSSLMODE:
+    DB_CONFIG["sslmode"] = PGSSLMODE
+elif "." in str(DB_CONFIG["host"]) and DB_CONFIG["host"] not in ("127.0.0.1",):
+    DB_CONFIG["sslmode"] = "require"
+
+
+def connect():
+    """Open a new connection using whichever configuration is available."""
+    if DATABASE_URL:
+        dsn = DATABASE_URL
+        # psycopg2 understands postgres:// and postgresql:// equally.
+        if "sslmode=" not in dsn and ".render.com" in dsn:
+            dsn += ("&" if "?" in dsn else "?") + "sslmode=require"
+        return psycopg2.connect(dsn)
+
+    return psycopg2.connect(**DB_CONFIG)
+
+
+def db_source():
+    """Human-readable description of the active config, with no secrets."""
+    if DATABASE_URL:
+        return "DATABASE_URL"
+    return "PG* variables (host=%s, db=%s)" % (
+        DB_CONFIG["host"], DB_CONFIG["dbname"]
+    )
+
+
+@app.get("/")
+def index():
+    """Render's root URL used to 404 because only /api/* existed."""
+    return jsonify({
+        "service": "Sonar SG API",
+        "status": "running",
+        "frontend": "https://25070243035-cell.github.io/singapore-data-project/",
+        "endpoints": {
+            "GET /api/health": "database connectivity check",
+            "GET /api/categories": "category and subcategory counts",
+            "GET /api/services": (
+                "nearby services; params: lat, lon, radius, category, "
+                "subcategory, mode (radius|nearest), limit"
+            )
+        }
+    })
+
+
+@app.get("/healthz")
+def healthz():
+    """Cheap liveness probe for Render's health check (no database hit)."""
+    return "ok", 200
 
 
 @app.get("/api/health")
 def health():
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        conn.close()
+        conn = connect()
+
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM services;")
+                rows = int(cur.fetchone()[0])
+                cur.execute("SELECT PostGIS_Version();")
+                postgis = cur.fetchone()[0]
+        finally:
+            conn.close()
 
         return jsonify({
             "status": "ok",
-            "database": "connected"
+            "database": "connected",
+            "config": db_source(),
+            "services_rows": rows,
+            "postgis": postgis
         })
 
-    except Exception:
+    except Exception as exc:
         app.logger.exception("Database health check failed")
-        return jsonify({
+
+        payload = {
             "status": "error",
-            "message": "Could not connect to the database."
-        }), 500
+            "message": "Could not connect to the database.",
+            "config": db_source()
+        }
+
+        # Set API_DEBUG=1 in the Render dashboard to surface the real
+        # psycopg2 error here while setting the deployment up.
+        if os.getenv("API_DEBUG") == "1":
+            payload["detail"] = str(exc).strip()
+
+        return jsonify(payload), 500
 
 
 @app.get("/api/categories")
@@ -43,7 +125,7 @@ def categories():
     """Category → subcategory counts, so the frontend chips always
     match what is actually stored in PostGIS."""
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = connect()
 
         try:
             with conn.cursor(
@@ -177,7 +259,7 @@ def nearby_services():
             limit
         )
 
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = connect()
 
         try:
             with conn.cursor(
@@ -231,6 +313,7 @@ def nearby_services():
 
 
 if __name__ == "__main__":
+    # Local development only. On Render the app is served by gunicorn.
     port = int(os.environ.get("PORT", 5000))
 
     app.run(

@@ -14,9 +14,16 @@
     "use strict";
 
     /* ------------------------------------------------------------------ config */
-    const API_BASE = "http://127.0.0.1:5000/api";
+    // js/config.js decides whether to talk to the local Flask server or the
+    // deployed Render API. The fallbacks keep app.js usable on its own.
+    const CFG = window.SONAR_CONFIG || {};
+    const API_BASE = CFG.apiBase || "http://127.0.0.1:5000/api";
     const API_URL = API_BASE + "/services";
-    const GEOSERVER_WMS = "http://localhost:8080/geoserver/singapore_webgis/wms";
+    const GEOSERVER_WMS = CFG.geoserverWms !== undefined
+        ? CFG.geoserverWms
+        : "http://localhost:8080/geoserver/singapore_webgis/wms";
+    const HAS_WMS = Boolean(GEOSERVER_WMS);
+    const COLD_START = Boolean(CFG.coldStart);
     const WMS_LAYER = "singapore_webgis:services";
 
     // Same study-area box the Flask API enforces
@@ -25,7 +32,7 @@
     const SAMPLE_SPOT = { lat: 1.335210, lon: 103.846163, label: "Toa Payoh Towers", sub: "310145 · sample location" };
 
     const RADII = [500, 1000, 2000, 5000, 10000];
-    const SEARCH_TIMEOUT_MS = 15000;
+    const SEARCH_TIMEOUT_MS = COLD_START ? 70000 : 15000;
 
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const mqDesktop = window.matchMedia("(min-width: 1024px)");
@@ -331,6 +338,7 @@
 
     // ---- overlays
     function makeWms(extra) {
+        if (!HAS_WMS) return null;
         const layer = L.tileLayer.wms(GEOSERVER_WMS, Object.assign({
             layers: WMS_LAYER,
             format: "image/png",
@@ -347,6 +355,10 @@
         if (geoserverWarned) return;
         geoserverWarned = true;
         toast("error", "GeoServer isn't responding at localhost:8080. Start GeoServer to see WMS layers.");
+    }
+
+    function wmsUnavailable() {
+        toast("info", "The GeoServer WMS layers only work when GeoServer runs on your own machine. The markers above come from the live PostGIS API.");
     }
 
     const servicesWMS = makeWms();
@@ -1545,14 +1557,23 @@
             if (err.name === "AbortError" && !timedOut) return; // cancelled on purpose
             console.error("Nearby services error:", err);
             let title = "Search failed", msg = err.message, kind = err.kind;
-            if (timedOut) { title = "The search took too long"; msg = "The API didn't answer within " + SEARCH_TIMEOUT_MS / 1000 + " s. Check the Flask terminal, then retry."; }
+            if (timedOut) {
+                title = "The search took too long";
+                msg = COLD_START
+                    ? "The API didn't answer within " + SEARCH_TIMEOUT_MS / 1000 + " s. Free Render services sleep when idle and can take a while to wake up — please retry."
+                    : "The API didn't answer within " + SEARCH_TIMEOUT_MS / 1000 + " s. Check the Flask terminal, then retry.";
+            }
             else if (err instanceof TypeError || kind === undefined) {
                 title = "Can't reach the search API";
-                msg = "Sonar SG couldn't connect to " + API_BASE + ". Start the Flask server (python backend/app.py) and retry.";
+                msg = COLD_START
+                    ? "Sonar SG couldn't reach the API at " + API_BASE + ". The free Render service may be waking up — retry in a moment."
+                    : "Sonar SG couldn't connect to " + API_BASE + ". Start the Flask server (python backend/app.py) and retry.";
                 showApiBanner("Can't reach the search API at " + API_BASE.replace(/^https?:\/\//, "") + ".");
             } else if (kind === "server") {
                 title = "The database query failed";
-                msg = err.message + " Check that PostgreSQL is running.";
+                msg = err.message + (COLD_START
+                    ? " The API is up but its database query failed."
+                    : " Check that PostgreSQL is running.");
             } else if (kind === "input") {
                 title = "The API rejected the search";
             }
@@ -2103,8 +2124,13 @@
           remove: () => { if (heatLayer) map.removeLayer(heatLayer); } },
         { id: "regions", name: "Planning regions", desc: "URA region boundaries (study area)", icon: "map", on: true,
           add: () => { if (regionsLayer) regionsLayer.addTo(map); }, remove: () => { if (regionsLayer) map.removeLayer(regionsLayer); } },
-        { id: "wms", name: "All services (GeoServer WMS)", desc: "All 16,487 services from PostGIS, rendered by GeoServer", icon: "globe", on: false,
-          add: () => servicesWMS.addTo(map), remove: () => map.removeLayer(servicesWMS) }
+        { id: "wms", name: "All services (GeoServer WMS)",
+          desc: HAS_WMS
+              ? "All 16,487 services from PostGIS, rendered by GeoServer"
+              : "Needs GeoServer running locally — unavailable on the published site",
+          icon: "globe", on: false,
+          add: () => { if (servicesWMS) servicesWMS.addTo(map); else wmsUnavailable(); },
+          remove: () => { if (servicesWMS) map.removeLayer(servicesWMS); } }
     ];
     const overlayState = {};
     function overlayOn(id) { return overlayState[id] !== false; }
@@ -2128,6 +2154,9 @@
             (e.target.checked ? o.add : o.remove)();
         });
 
+        const wmsSection = $("#wmsSection");
+        if (wmsSection && !HAS_WMS) wmsSection.hidden = true;
+
         $("#wmsCatList").innerHTML = Object.keys(CATEGORIES).map((c) =>
             '<label class="ov-row" data-cat="' + esc(c) + '"><span class="ov-ic">' + svg(CATEGORIES[c].icon) + '</span><span class="ov-text"><strong>' + esc(c) + '</strong></span><input type="checkbox" class="switch" role="switch" data-wms-cat="' + esc(c) + '"></label>'
         ).join("");
@@ -2135,6 +2164,7 @@
             const c = e.target.dataset.wmsCat;
             if (!c) return;
             const layer = getCategoryWms(c);
+            if (!layer) { e.target.checked = false; wmsUnavailable(); return; }
             if (e.target.checked) layer.addTo(map); else map.removeLayer(layer);
         });
     }
