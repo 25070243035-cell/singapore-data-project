@@ -15,7 +15,7 @@ DB_CONFIG = {
     "port": os.getenv("PGPORT", "5432"),
     "dbname": os.getenv("PGDATABASE", "singapore_webgis"),
     "user": os.getenv("PGUSER", "postgres"),
-    "password": os.getenv("PGPASSWORD", "root")
+    "password": os.getenv("PGPASSWORD")
 }
 
 
