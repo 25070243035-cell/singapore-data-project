@@ -6,6 +6,7 @@ from psycopg2.extras import RealDictCursor
 import os
 import math
 import re
+from urllib.parse import urlsplit, unquote, parse_qs
 
 app = Flask(__name__)
 CORS(app)
@@ -37,14 +38,54 @@ elif "." in str(DB_CONFIG["host"]) and DB_CONFIG["host"] not in ("127.0.0.1",):
     DB_CONFIG["sslmode"] = "require"
 
 
+def url_to_kwargs(url):
+    """Turn a postgres:// URL into psycopg2 keyword arguments.
+
+    libpq splits a connection URI at the FIRST "@", so a password
+    containing "@" (common in generated Supabase passwords) leaves the
+    tail of the password glued to the front of the host name and the
+    lookup fails with "could not translate host name". Python's urlsplit
+    splits at the LAST "@" instead, which recovers the right host whether
+    or not the password was percent-encoded.
+    """
+    parts = urlsplit(url)
+
+    if parts.scheme not in ("postgres", "postgresql"):
+        raise ValueError("DATABASE_URL must start with postgresql://")
+    if not parts.hostname:
+        raise ValueError("DATABASE_URL has no host name")
+
+    kwargs = {"host": parts.hostname}
+
+    if parts.port:
+        kwargs["port"] = parts.port
+    if parts.username:
+        kwargs["user"] = unquote(parts.username)
+    if parts.password:
+        kwargs["password"] = unquote(parts.password)
+
+    dbname = parts.path.lstrip("/")
+    if dbname:
+        kwargs["dbname"] = unquote(dbname)
+
+    # Keep anything else the provider put in the query string, e.g. sslmode.
+    for key, values in parse_qs(parts.query).items():
+        if values:
+            kwargs.setdefault(key, values[0])
+
+    # Managed Postgres requires TLS. Render's internal hostname has no dot
+    # and speaks plain TCP inside their network, so leave that one alone.
+    local = parts.hostname in ("localhost", "127.0.0.1", "::1")
+    if "sslmode" not in kwargs and "." in parts.hostname and not local:
+        kwargs["sslmode"] = "require"
+
+    return kwargs
+
+
 def connect():
     """Open a new connection using whichever configuration is available."""
     if DATABASE_URL:
-        dsn = DATABASE_URL
-        # psycopg2 understands postgres:// and postgresql:// equally.
-        if "sslmode=" not in dsn and ".render.com" in dsn:
-            dsn += ("&" if "?" in dsn else "?") + "sslmode=require"
-        return psycopg2.connect(dsn)
+        return psycopg2.connect(**url_to_kwargs(DATABASE_URL))
 
     return psycopg2.connect(**DB_CONFIG)
 

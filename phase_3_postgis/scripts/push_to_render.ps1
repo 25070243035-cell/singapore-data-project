@@ -52,13 +52,20 @@ Write-Host "Local database: postgres@localhost/singapore_webgis" -ForegroundColo
 $localPassword = Read-Secret "Password for the local 'postgres' user"
 
 Write-Host ""
-Write-Host "Render target. Paste the EXTERNAL Database URL (postgresql://...)" -ForegroundColor Cyan
-$renderUrl = Read-Secret "Render External Database URL"
+Write-Host "Target database. Paste its connection URL (postgresql://...)" -ForegroundColor Cyan
+$renderUrl = Read-Secret "Target database URL"
 
-if ([string]::IsNullOrWhiteSpace($renderUrl)) { throw "No Render URL supplied." }
+if ([string]::IsNullOrWhiteSpace($renderUrl)) { throw "No connection URL supplied." }
 if ($renderUrl -notmatch '^postgres(ql)?://')  { throw "That does not look like a postgresql:// connection URL." }
-if ($renderUrl -notmatch '\.render\.com')      {
-    Write-Host "Warning: the host does not contain .render.com - make sure this is the EXTERNAL url." -ForegroundColor Yellow
+
+# Supabase's direct host (db.<ref>.supabase.co) resolves over IPv6 only,
+# which Render cannot reach. The pooler host is the IPv4 one.
+if ($renderUrl -match 'db\.[a-z0-9]+\.supabase\.co') {
+    Write-Host "Note: that is Supabase's DIRECT host. Use the Session pooler string" -ForegroundColor Yellow
+    Write-Host "      (aws-0-....pooler.supabase.com) so Render can reach it too." -ForegroundColor Yellow
+}
+if ($renderUrl -match '@localhost|@127\.0\.0\.1') {
+    throw "That URL points at localhost - it has to be the hosted database."
 }
 
 # psql/pg_dump read the password from this variable, so it never appears
@@ -98,12 +105,12 @@ try {
     # --- 3. PostGIS on the target ---------------------------------------
     # The dumped CREATE TABLE references the `geometry` type, so the
     # extension has to exist before the restore runs.
-    Write-Host "[3/6] Enabling PostGIS on the Render database..." -ForegroundColor Green
+    Write-Host "[3/6] Enabling PostGIS on the target database..." -ForegroundColor Green
 
     Remove-Item Env:PGPASSWORD   # the URL carries its own credentials
 
     & $psql $renderUrl -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS postgis;"
-    if ($LASTEXITCODE -ne 0) { throw "Could not enable PostGIS on the Render database. Check that the EXTERNAL url is correct and that the instance is awake." }
+    if ($LASTEXITCODE -ne 0) { throw "Could not enable PostGIS on the target database. Check the URL, and that the instance is awake." }
 
     # --- 4. restore ------------------------------------------------------
     Write-Host "[4/6] Uploading the table (this replaces any existing services table)..." -ForegroundColor Green
@@ -115,7 +122,7 @@ try {
     Write-Host "[5/6] Adding the geog column and spatial indexes..." -ForegroundColor Green
 
     & $psql $renderUrl -v ON_ERROR_STOP=1 -f $prepareSql
-    if ($LASTEXITCODE -ne 0) { throw "prepare_services.sql failed on the Render database." }
+    if ($LASTEXITCODE -ne 0) { throw "prepare_services.sql failed on the target database." }
 
     # --- 6. verify -------------------------------------------------------
     Write-Host "[6/6] Verifying..." -ForegroundColor Green
@@ -130,7 +137,7 @@ FROM services;
     if ($LASTEXITCODE -ne 0) { throw "Verification query failed." }
 
     Write-Host ""
-    Write-Host "Done. Render now holds: $($remote.Trim())" -ForegroundColor Green
+    Write-Host "Done. The hosted database now holds: $($remote.Trim())" -ForegroundColor Green
     Write-Host "Local rows were: $localCount" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "Now check the live API:" -ForegroundColor Cyan
