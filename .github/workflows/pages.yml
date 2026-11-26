@@ -12,6 +12,12 @@ permissions:
   pages: write
   id-token: write
 
+# Only one Pages deployment at a time. Overlapping runs make the
+# deploy-pages step fail with a conflict.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   deploy:
     environment:
