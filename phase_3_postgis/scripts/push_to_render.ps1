@@ -112,6 +112,56 @@ try {
     & $psql $renderUrl -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS postgis;"
     if ($LASTEXITCODE -ne 0) { throw "Could not enable PostGIS on the target database. Check the URL, and that the instance is awake." }
 
+    # Supabase installs PostGIS into an `extensions` schema, not `public`.
+    # pg_dump writes `public.geometry` and disables search_path, so the
+    # restore would fail with: type "public.geometry" does not exist.
+    $geomSchema = (& $psql $renderUrl -tAc @"
+SELECT n.nspname
+FROM pg_type t
+JOIN pg_namespace n ON n.oid = t.typnamespace
+WHERE t.typname = 'geometry'
+LIMIT 1;
+"@)
+    if ($LASTEXITCODE -ne 0) { throw "Could not determine where PostGIS is installed on the target." }
+
+    $geomSchema = $geomSchema.Trim()
+    if (-not $geomSchema) { throw "PostGIS does not appear to be installed on the target database." }
+    Write-Host "      PostGIS types live in schema '$geomSchema'."
+
+    if ($geomSchema -ne "public") {
+        Write-Host "      Rewriting the dump to reference '$geomSchema' instead of 'public'."
+
+        # Only touch DDL. Between "COPY ... FROM stdin;" and its closing
+        # "\." marker the file holds row data, and a service name or
+        # address containing this text must not be rewritten.
+        $pattern = '(?<![\w.])public\.(geometry|geography|box2d|box3d|spheroid|geometry_dump)\b'
+        $inCopy = $false
+        $rewritten = 0
+
+        $lines = [System.IO.File]::ReadAllLines($dumpFile)
+        for ($i = 0; $i -lt $lines.Length; $i++) {
+            $line = $lines[$i]
+
+            if ($inCopy) {
+                if ($line -eq '\.') { $inCopy = $false }
+                continue
+            }
+            if ($line -match '^COPY .* FROM stdin;') { $inCopy = $true; continue }
+
+            if ($line -match $pattern) {
+                $lines[$i] = [regex]::Replace($line, $pattern, ($geomSchema + '.$1'))
+                $rewritten++
+            }
+        }
+
+        [System.IO.File]::WriteAllLines($dumpFile, $lines)
+        Write-Host "      rewrote $rewritten DDL line(s), left row data untouched."
+    }
+
+    # prepare_services.sql names geography() unqualified, so make sure the
+    # extension schema is on the search path for the rest of the session.
+    $env:PGOPTIONS = "--search_path=public,$geomSchema"
+
     # --- 4. restore ------------------------------------------------------
     Write-Host "[4/6] Uploading the table (this replaces any existing services table)..." -ForegroundColor Green
 
@@ -145,6 +195,7 @@ FROM services;
 }
 finally {
     Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:PGOPTIONS -ErrorAction SilentlyContinue
     if (Test-Path $dumpFile) {
         Remove-Item $dumpFile -Force -ErrorAction SilentlyContinue
         Write-Host "Removed the temporary dump file." -ForegroundColor DarkGray
