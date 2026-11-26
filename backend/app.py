@@ -142,35 +142,81 @@ def healthz():
 
 @app.get("/api/health")
 def health():
+    # Reaching the server and finding the data are different problems,
+    # and saying "could not connect" for a missing table sends you off
+    # checking credentials that were never wrong.
     try:
         conn = connect()
-
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM services;")
-                rows = int(cur.fetchone()[0])
-                cur.execute("SELECT PostGIS_Version();")
-                postgis = cur.fetchone()[0]
-        finally:
-            conn.close()
-
-        return jsonify({
-            "status": "ok",
-            "database": "connected",
-            "config": db_source(),
-            "services_rows": rows,
-            "postgis": postgis
-        })
-
     except Exception as exc:
-        app.logger.exception("Database health check failed")
-
+        app.logger.exception("Database connection failed")
         return jsonify({
             "status": "error",
+            "database": "unreachable",
             "message": "Could not connect to the database.",
             "config": db_source(),
             "detail": safe_error(exc)
         }), 500
+
+    try:
+        with conn.cursor() as cur:
+            try:
+                cur.execute("SELECT PostGIS_Version();")
+                postgis = cur.fetchone()[0]
+            except Exception:
+                conn.rollback()
+                postgis = None
+
+            cur.execute("SELECT to_regclass('public.services');")
+            table = cur.fetchone()[0]
+
+            rows = None
+            if table is not None:
+                cur.execute("SELECT COUNT(*) FROM services;")
+                rows = int(cur.fetchone()[0])
+
+    except Exception as exc:
+        app.logger.exception("Database query failed")
+        return jsonify({
+            "status": "error",
+            "database": "connected",
+            "message": "Connected to the database, but the query failed.",
+            "config": db_source(),
+            "detail": safe_error(exc)
+        }), 500
+
+    finally:
+        conn.close()
+
+    if postgis is None:
+        return jsonify({
+            "status": "error",
+            "database": "connected",
+            "message": (
+                "Connected, but PostGIS is not installed. Run "
+                "CREATE EXTENSION postgis; on this database."
+            ),
+            "config": db_source()
+        }), 500
+
+    if table is None:
+        return jsonify({
+            "status": "error",
+            "database": "connected",
+            "message": (
+                "Connected, but there is no services table. Upload it with "
+                "phase_3_postgis/scripts/push_to_render.ps1."
+            ),
+            "config": db_source(),
+            "postgis": postgis
+        }), 500
+
+    return jsonify({
+        "status": "ok" if rows else "empty",
+        "database": "connected",
+        "config": db_source(),
+        "services_rows": rows,
+        "postgis": postgis
+    })
 
 
 @app.get("/api/categories")
