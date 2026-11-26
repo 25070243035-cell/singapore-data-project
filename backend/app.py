@@ -5,6 +5,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 import math
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -57,6 +58,23 @@ def db_source():
     )
 
 
+def safe_error(exc):
+    """The psycopg2 message, with anything credential-shaped removed.
+
+    Connection errors name the host, port and user, which is exactly what
+    makes them useful here. They can also echo back the DSN, so strip the
+    password out before this is ever returned over HTTP.
+    """
+    text = str(exc).strip()
+
+    # postgresql://user:secret@host  ->  postgresql://user:***@host
+    text = re.sub(r"(://[^:/\s]+:)[^@/\s]+(@)", r"\1***\2", text)
+    # password=secret  ->  password=***
+    text = re.sub(r"(password\s*=\s*)\S+", r"\1***", text, flags=re.I)
+
+    return text
+
+
 @app.get("/")
 def index():
     """Render's root URL used to 404 because only /api/* existed."""
@@ -106,18 +124,12 @@ def health():
     except Exception as exc:
         app.logger.exception("Database health check failed")
 
-        payload = {
+        return jsonify({
             "status": "error",
             "message": "Could not connect to the database.",
-            "config": db_source()
-        }
-
-        # Set API_DEBUG=1 in the Render dashboard to surface the real
-        # psycopg2 error here while setting the deployment up.
-        if os.getenv("API_DEBUG") == "1":
-            payload["detail"] = str(exc).strip()
-
-        return jsonify(payload), 500
+            "config": db_source(),
+            "detail": safe_error(exc)
+        }), 500
 
 
 @app.get("/api/categories")
